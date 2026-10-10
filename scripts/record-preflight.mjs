@@ -18,7 +18,7 @@ const reviewedFixtures = {
   'W/test/host/native-host.test.mjs': { sha256: 'b5377a4ac86491a5a5ab0c50f2eb63f45eb7bf4e66586c2df57de1360128b967', count: 3, violationsSHA256: 'f9b21a6482205486fa1b38c78f0370469b166ffc8fdb10d9f637d39bc5c090da' },
   'W/test/unit/child-guard.test.mjs': { sha256: '2ab5691257de0c08b80732b709f0b098b1dd915087bbbb898db15b6d739bfffa', count: 9, violationsSHA256: '629814cfbe446e82526a841f99aa623ca23bce1665c083e0cd13449633427e4d' },
   'W/test/unit/public-safety.test.mjs': { sha256: '81761f0eadcca6bb511bbcaafff95f2646c9115ccd4dc922d5ebd2434ba2d635', count: 14, violationsSHA256: 'a5efaeeeecf8dd9578a8a29bba8369344ea173c3cde2b87a9dff415961fcbba5', specifierCount: 2, specifiersSHA256: '49d2bccfb136a46a01ba4417be6978aa482b2ccbd4f13de776a33d4579b852f2' },
-  'D/test/fixed-controller.test.mjs': { sha256: 'ace6d928d418bec2cc33ba77db90563e974cb2c74fb331a68c6b095382f7a31e', count: 6, violationsSHA256: 'a3b48b0cf20fd7b5d34ae9262ff9696bb88cfd34e3dc376ca1a16f80cf3070f7' },
+  'D/test/fixed-controller.test.mjs': { sha256: '27516d0bc647dc841282fc6420cb831ce1b1147d05d6603bda64e6288993e274', count: 6, violationsSHA256: 'a3b48b0cf20fd7b5d34ae9262ff9696bb88cfd34e3dc376ca1a16f80cf3070f7' },
 };
 const referenceAssets = new Set(['docs/screenshots/dag-pane-command-en.png', 'docs/screenshots/dag-pane-command.png',
   'docs/screenshots/workflow-in-progress-en.png', 'docs/screenshots/workflow-in-progress.png']);
