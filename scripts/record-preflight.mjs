@@ -14,7 +14,7 @@ const targets = {
   D: { repository: 'https://github.com/grim-susemi/omo-herdr-dag', branch: 'feat/concurrent-views-and-metrics', name: 'omo-herdr-dag' },
 };
 const reviewedFixtures = {
-  'W/test/controller.test.mjs': { sha256: '003ba0da95b4c41f1a6b09e441582e22cab8e00b75099c99637968c944a81362', count: 6, violationsSHA256: '440dd1225b677b2329114e6787a3b2aaf940ab4d570b43328e029817a5e4aeed' },
+  'W/test/controller.test.mjs': { sha256: '2d82dc8ff067cc10cc26cdacad441be3370ab1c4b16a84abe3169fd19636e1ea', count: 6, violationsSHA256: 'ed2376bc50071607c94c2505ab5d51eca15fbf50ca8ee9d5baae34ec0491d962' },
   'W/test/host/native-host.test.mjs': { sha256: 'b5377a4ac86491a5a5ab0c50f2eb63f45eb7bf4e66586c2df57de1360128b967', count: 3, violationsSHA256: 'f9b21a6482205486fa1b38c78f0370469b166ffc8fdb10d9f637d39bc5c090da' },
   'W/test/unit/child-guard.test.mjs': { sha256: '2ab5691257de0c08b80732b709f0b098b1dd915087bbbb898db15b6d739bfffa', count: 9, violationsSHA256: '629814cfbe446e82526a841f99aa623ca23bce1665c083e0cd13449633427e4d' },
   'W/test/unit/public-safety.test.mjs': { sha256: '81761f0eadcca6bb511bbcaafff95f2646c9115ccd4dc922d5ebd2434ba2d635', count: 14, violationsSHA256: 'a5efaeeeecf8dd9578a8a29bba8369344ea173c3cde2b87a9dff415961fcbba5', specifierCount: 2, specifiersSHA256: '49d2bccfb136a46a01ba4417be6978aa482b2ccbd4f13de776a33d4579b852f2' },
