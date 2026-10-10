@@ -32,7 +32,7 @@ Optional arguments: `--herdr-bin` selects the existing CLI; `--session` defaults
 
 The host uses real stock ResourceLoader, SessionManager, registered tool/command callbacks and InteractiveMode factories through a bounded component facade, without running the user's conversation or full parent chat TUI. QA DAG/worker records are synthetic protocol-consumer fixtures; Todo uses real native mutations. ANSI replay images are terminal snapshots, not desktop screenshots.
 
-See [installation](docs/INSTALL.md), [protocol](docs/PROTOCOL.md), and [roadmap](docs/ROADMAP.md). This concurrent candidate is local source work; publishing or activating the primary harness is a separate decision.
+See [installation](docs/INSTALL.md), [protocol](docs/PROTOCOL.md), and [roadmap](docs/ROADMAP.md). The current source history is available on the [`feat/concurrent-dashboard` branch](https://github.com/grim-susemi/omo-herdr-todo/tree/feat/concurrent-dashboard), with the matching [DAG companion source](https://github.com/grim-susemi/omo-herdr-dag/tree/feat/concurrent-views-and-metrics). These are source checkouts, not a new npm release.
 
 ## Privacy and provenance
 
@@ -40,10 +40,11 @@ Runtime packages include compiled runtime, CLI, README, MIT license and third-pa
 
 The SDK is imported read-only and is not redistributed. Reuse origins are recorded in `THIRD-PARTY-NOTICES.md`.
 
-From a clean source checkout, `npm run record:preflight` prints reviewed files/hashes, local heads, target repositories/branches and exclusions without external writes. If the named companion checkout is unavailable, pass `-- --dag-root <dag-source-checkout>`. See the [sanitized plan](docs/plans/omo-herdr-todo.md) and [verified history](docs/HISTORY.md). External upload remains pending separate approval.
+From a clean source checkout, `npm run record:preflight` prints reviewed files/hashes, local heads, target repositories/branches and exclusions without external writes. If the named companion checkout is unavailable, pass `-- --dag-root <dag-source-checkout>`. See the [sanitized plan](docs/plans/omo-herdr-todo.md) and [verified history](docs/HISTORY.md). Running the preflight never grants upload permission or activates an installed harness.
 
 ## 한국어 요약
 
 - DAG·작업자·Todo를 동시에 봅니다. 각 화면의 `f` 추적과 수동 탐색은 독립적입니다.
 - `c`로 완료 항목을 펼치고 `q`로 해당 화면만 닫습니다. `/dashboard` 하나로 세 화면을 다시 엽니다.
 - 설치 파일 복사와 세션 활성화는 다릅니다. 보고된 비용과 연결이 끊긴 화면을 실제 청구·최신 진행으로 혼동하지 마세요.
+- 최신 소스 이력은 위 두 GitHub 브랜치에 있습니다. npm 정식 배포와 실사용 설치는 별도입니다.

@@ -1,5 +1,21 @@
 # Verified local source history
 
+## GitHub source record — 2026-10-10
+
+The user authorized publishing the current source history to the Todo repository's
+`feat/concurrent-dashboard` branch and the owned DAG fork's
+`feat/concurrent-views-and-metrics` branch. This records the latest empty-session
+Todo handling, coordinated columns and unified `/dashboard` command from
+Todo `2aa1820` and DAG `282ed76`. The existing DAG default and automatic-follow
+PR branches are preserved. This source publication is not an npm release or a
+primary-harness installation.
+
+The public preflight fixture identity is refreshed for the latest controller
+regression tests. Its six synthetic Windows path matches are unchanged; their
+line numbers moved when the empty-session regression was added. Both the full
+file hash and violation hash remain required, and added private content is
+rejected by a dedicated regression test.
+
 ## Deployment compatibility check — 2026-10-04
 
 The installed SDK was updated independently after the prior local acceptance:
@@ -12,7 +28,7 @@ Only the source manifest and this history document are updated; dashboard
 runtime bytes and previous source-bound visual evidence are unchanged. Earlier
 2026.10.3 results remain historical and are not reported as fresh SDK tests.
 
-These commits are local provenance, not remote publication claims. The sanitized [reviewed plan](plans/omo-herdr-todo.md) and source preflight describe the intended external record. The preflight captures current heads, parent/root lineage and exact relative file hashes rather than embedding private execution logs.
+The records below describe the earlier local acceptance, not new tests run for the GitHub source record. The sanitized [reviewed plan](plans/omo-herdr-todo.md) preserves that reviewed scope. The preflight captures current heads, parent/root lineage and exact relative file hashes rather than embedding private execution logs.
 
 | Increment | Todo commit | DAG commit |
 | --- | --- | --- |
@@ -61,4 +77,4 @@ remain unchanged. Prior same-name file existence/content and historical or
 cached loading remain unknown; this is current-file quarantine, not a claim
 that an unknown original was restored or that the incident never occurred.
 All authorized local work and the sole review finding are now resolved.
-External source upload remains a separately approved stage.
+External source upload was approved separately for the GitHub source record above.
