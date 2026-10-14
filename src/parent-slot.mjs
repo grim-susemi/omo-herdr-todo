@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 export const parentSlotSchema = 'omo-herdr-dashboard/parent-slot/2';
 const actors = globalThis[Symbol.for(parentSlotSchema)] ??= new Map();
+const releasedSlots = globalThis[Symbol.for(`${parentSlotSchema}/released`)] ??= new Map();
 const roleOwner = { todo: 'todo', dag: 'dag', workers: 'dag' };
 const phases = ['DISCOVER', 'CLAIMED', 'PREPARED', 'RECOVERING', 'READY', 'DRAINING', 'RELEASED', 'BLOCKED'];
 const text = value => typeof value === 'string' && value.length > 0;
@@ -33,6 +34,19 @@ const targetIdentity = value => keys(value, ['paneId', 'tabId', 'shell'], target
 const fail = (code, cause) => Object.assign(new Error(code, cause ? { cause } : undefined),
   { code, inlineFallback: true });
 const keyFor = (socket, pane) => createHash('sha256').update(JSON.stringify([socket, pane])).digest('hex');
+const diagnosticBranches = new Set(['claim', 'publish', 'validate-target', 'dispatch', 'reconcile',
+  'release', 'controller-write', 'legacy-source', 'schedule', 'stop']);
+const diagnosticCodes = new Set(['NONE', 'EFFECT_UNKNOWN', 'IDENTITY_MISMATCH', 'OPERATION_MISMATCH',
+  'LEASE_LOST', 'PUBLISH_FAILED', 'STALE_CAPABILITY', 'SLOT_CORRUPT', 'ACK_MISMATCH', 'CLOSURE_MISMATCH',
+  'SQLITE_BUSY', 'SOURCE_MISMATCH', 'RECOVERY_BLOCKED', 'EPERM', 'EBUSY', 'ENOENT', 'pane_not_found']);
+
+// A reload in the same native producer may reuse only the exact last published
+// journal of an actor whose SQLite handle was cooperatively closed. This
+// private receipt cannot authorize a different producer, nonce or slot.
+export function cooperativelyReleasedParentSlot(value, producer) {
+  return validParentSlot(value) && sameNative(value.producer, producer) &&
+    same(releasedSlots.get(`${value.canonicalStateDir}:${value.layoutKey}`), value);
+}
 
 export function validParentSlot(value) {
   if (!keys(value, ['schema', 'layoutKey', 'canonicalStateDir', 'canonicalSocketPath', 'parent',
@@ -67,12 +81,15 @@ export function validParentSlot(value) {
     value.locatorOwners.some(entry => entry.path === canonical(resolve(record[key])) &&
       entry.sessionId === record.sessionId)))) return false;
   if (!value.operations.every(op => keys(op, ['id', 'ownerNonce', 'sessionId', 'generation', 'participant',
-    'lifetimeId', 'role', 'type', 'target', 'status', 'preparedRevision']) &&
+    'lifetimeId', 'role', 'type', 'target', 'status', 'preparedRevision'], ['settlement']) &&
     text(op.id) && text(op.ownerNonce) && text(op.sessionId) && positive(op.generation) &&
     op.generation <= value.generation && roleOwner[op.role] === op.participant && text(op.lifetimeId) &&
     ['split', 'run', 'close', 'arrange', 'retire'].includes(op.type) && targetIdentity(op.target) &&
     op.target.tabId === value.parent.tabId && ['PREPARED', 'DISPATCHED', 'SETTLED', 'UNKNOWN'].includes(op.status) &&
-    positive(op.preparedRevision) && op.preparedRevision <= value.revision)) return false;
+    positive(op.preparedRevision) && op.preparedRevision <= value.revision &&
+    (!Object.hasOwn(op, 'settlement') || op.status === 'SETTLED' &&
+      keys(op.settlement, ['reason', 'code', 'paneId']) && op.settlement.reason === 'target_gone' &&
+      op.settlement.code === 'pane_not_found' && op.settlement.paneId === op.target.paneId))) return false;
   if (new Set(value.operations.map(op => op.id)).size !== value.operations.length) return false;
   if (!value.operations.every(op => op.generation !== value.generation ||
     op.ownerNonce === value.ownerNonce && op.sessionId === value.sessionId &&
@@ -157,23 +174,38 @@ export async function claimParentSlot(options) {
     const fs = options.fs ?? filesystem;
     await fs.mkdir(paths.directory, { recursive: true, mode: 0o700 });
     const db = openLease(paths);
+    let actor;
     try {
       const previous = await readSlot(fs, paths);
       if (previous && !sameParent(previous.parent, options.parent)) throw fail('PARENT_MISMATCH');
       if (previous && previous.phase !== 'RELEASED') {
-        const observation = await options.observePrevious?.(structuredClone(previous.producer));
-        if (!sameNative(previous.producer, observation?.identity) || observation.state !== 'dead') throw fail('LIVE_INCUMBENT');
-        if (previous.operations.some(op => op.status !== 'SETTLED')) throw fail('EFFECT_UNKNOWN');
+        if (!cooperativelyReleasedParentSlot(previous, options.producer)) {
+          const observation = await options.observePrevious?.(structuredClone(previous.producer));
+          if (!sameNative(previous.producer, observation?.identity) || observation.state !== 'dead') throw fail('LIVE_INCUMBENT');
+        }
       }
       const observation = await options.observe({ parent: options.parent, producer: options.producer });
       if (!sameParent(observation?.parent, options.parent) || !sameNative(observation?.producer, options.producer)) {
         throw fail('IDENTITY_MISMATCH');
       }
-      const actor = new ParentSlot({ paths, db, fs, options, actorKey, previous });
+      actor = new ParentSlot({ paths, db, fs, options, actorKey, previous });
+      // The successor holds the real owner lease and observes with its own
+      // native identity before publishing any takeover. An ambiguous old
+      // operation leaves the predecessor's blocked bytes intact.
+      for (const operation of actor.record.operations.filter(op => op.status !== 'SETTLED')) {
+        if (!['UNKNOWN', 'DISPATCHED'].includes(operation.status)) throw fail('EFFECT_UNKNOWN');
+        const observation = await actor.observe({ parent: actor.record.parent, producer: actor.record.producer,
+          target: operation.target, operation });
+        actor.checkObservation(observation);
+        if (!actor.targetGone(operation, observation)) throw fail('EFFECT_UNKNOWN');
+        actor.record = actor.obsoleteOperation(actor.record, operation);
+      }
       await actor.publish({ ...actor.record, phase: 'DISCOVER' });
       await actor.publish({ ...actor.record, phase: 'CLAIMED' });
+      releasedSlots.delete(actorKey);
       return actor;
     } catch (error) {
+      await actor?.diagnose('claim', error, actor.record.operations.find(op => op.status !== 'SETTLED'));
       if (db.isTransaction) db.exec('ROLLBACK');
       db.close();
       throw error;
@@ -193,6 +225,7 @@ class ParentSlot {
     this.blocked = false;
     this.releasing = null;
     this.drainChanged = () => {};
+    this.diagnostics = Promise.resolve();
     this.record = { schema: parentSlotSchema, layoutKey: paths.layoutKey,
       canonicalStateDir: paths.canonicalStateDir, canonicalSocketPath: paths.canonicalSocketPath,
       parent: structuredClone(options.parent), producer: structuredClone(options.producer), ownerNonce: randomUUID(),
@@ -210,6 +243,58 @@ class ParentSlot {
     const next = this.tail.then(job);
     this.tail = next.catch(() => {});
     return next;
+  }
+  diagnose(branch, cause, operation) {
+    if (!diagnosticBranches.has(branch)) return Promise.resolve();
+    const code = diagnosticCodes.has(cause?.code) ? cause.code :
+      diagnosticCodes.has(cause?.cause?.code) ? cause.cause.code : 'NONE';
+    const entry = { time: new Date().toISOString(), branch, code,
+      ...(['split', 'run', 'close', 'arrange', 'retire'].includes(operation?.type) ? { type: operation.type } : {}),
+      ...(Object.hasOwn(roleOwner, operation?.role ?? '') ? { role: operation.role } : {}) };
+    const path = join(this.paths.directory, 'blocked-diagnostics.jsonl');
+    this.diagnostics = this.diagnostics.then(async () => {
+      let entries = [];
+      try {
+        if ((await this.fs.stat(path)).size <= 64 * 1024) {
+          entries = (await this.fs.readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+            .filter(value => keys(value, ['time', 'branch', 'code'], ['type', 'role']) &&
+              typeof value.time === 'string' && new Date(value.time).toISOString() === value.time &&
+              diagnosticBranches.has(value.branch) && diagnosticCodes.has(value.code) &&
+              (!value.type || ['split', 'run', 'close', 'arrange', 'retire'].includes(value.type)) &&
+              (!value.role || Object.hasOwn(roleOwner, value.role)));
+        }
+      } catch { /* Diagnostics are never authority or a reason to block recovery. */ }
+      entries.push(entry);
+      let bytes = entries.map(value => JSON.stringify(value)).join('\n') + '\n';
+      while (entries.length > 200 || Buffer.byteLength(bytes) > 64 * 1024) {
+        entries.shift();
+        bytes = entries.map(value => JSON.stringify(value)).join('\n') + '\n';
+      }
+      await this.fs.writeFile(path, bytes, { mode: 0o600 });
+      await this.fs.chmod(path, 0o600);
+    }).catch(() => {});
+    return this.diagnostics;
+  }
+  checkObservation(observation) {
+    if (!this.leaseHeld) throw fail('LEASE_LOST');
+    if (!sameParent(observation?.parent, this.record.parent) ||
+      !sameNative(observation?.producer, this.record.producer)) throw fail('IDENTITY_MISMATCH');
+  }
+  targetGone(operation, observation) {
+    return observation.missing?.code === 'pane_not_found' &&
+      observation.missing.paneId === operation.target.paneId;
+  }
+  obsoleteOperation(record, operation) {
+    const closures = [...record.closures];
+    for (const role of Object.values(record.roles)) {
+      if (role.paneId === operation.target.paneId && !closures.some(entry =>
+        entry.role === role.role && entry.paneId === role.paneId && entry.sessionId === role.sessionId &&
+        entry.reason === 'pane_not_found')) closures.push({ role: role.role, paneId: role.paneId,
+        sessionId: role.sessionId, generation: record.generation, reason: 'pane_not_found' });
+    }
+    return { ...record, closures, operations: record.operations.map(op => op.id === operation.id ?
+      { ...op, status: 'SETTLED', settlement: { reason: 'target_gone', code: 'pane_not_found',
+        paneId: op.target.paneId } } : op) };
   }
   async publish(candidate) {
     if (!this.leaseHeld) throw fail('LEASE_LOST');
@@ -233,8 +318,10 @@ class ParentSlot {
         try { await directory.sync(); } finally { await directory.close(); }
       }
       this.record = next;
+      this.publishedRecord = structuredClone(next);
     } catch (error) {
       this.blocked = true;
+      await this.diagnose('publish', fail('PUBLISH_FAILED'), next.operations.find(op => op.id === next.transaction.id));
       throw fail('PUBLISH_FAILED', error);
     } finally {
       if (file) await file.close();
@@ -263,6 +350,7 @@ class ParentSlot {
       target && (!targetIdentity(target) || !same(target, observation?.target))) {
       this.blocked = true;
       this.epoch++;
+      await this.diagnose('validate-target', fail('IDENTITY_MISMATCH'), operation);
       throw fail('IDENTITY_MISMATCH');
     }
     return observation;
@@ -327,6 +415,7 @@ class ParentSlot {
       } catch (error) {
         this.blocked = true;
         await this.settle(operation.id, 'UNKNOWN', 'BLOCKED');
+        await this.diagnose('dispatch', fail('EFFECT_UNKNOWN'), operation);
         throw fail('EFFECT_UNKNOWN', error);
       }
     });
@@ -413,19 +502,23 @@ class ParentSlot {
   reconcile(id) {
     return this.enqueue(async () => {
       const operation = this.record.operations.find(op => op.id === id);
-      if (!this.leaseHeld || !operation || operation.status !== 'UNKNOWN') throw fail('OPERATION_MISMATCH');
+      if (!this.leaseHeld || this.draining || !operation ||
+        !['UNKNOWN', 'DISPATCHED'].includes(operation.status)) throw fail('OPERATION_MISMATCH');
       const observation = await this.observe({ parent: this.record.parent, producer: this.record.producer,
         target: operation.target, operation });
-      if (!sameParent(observation?.parent, this.record.parent) || !sameNative(observation?.producer, this.record.producer) ||
-        !(same(operation.target, observation?.target) || operation.type === 'close' &&
-          same(operation.target, observation?.retiredTarget) && observation.missing?.code === 'pane_not_found' &&
-          observation.missing.paneId === operation.target.paneId)) throw fail('IDENTITY_MISMATCH');
-      if (observation.effect?.id !== id || observation.effect.settled !== true) throw fail('EFFECT_UNKNOWN');
+      this.checkObservation(observation);
       const unresolved = this.record.operations.some(op => op.id !== id && op.status !== 'SETTLED');
-      await this.settle(id, 'SETTLED', unresolved ? 'BLOCKED' :
-        this.record.transaction.id === id ? 'RECOVERING' : 'CLAIMED');
+      if (this.targetGone(operation, observation)) {
+        await this.publish({ ...this.obsoleteOperation(this.record, operation), phase: unresolved ? 'BLOCKED' : 'CLAIMED' });
+      } else {
+        if (!same(operation.target, observation?.target)) throw fail('IDENTITY_MISMATCH');
+        if (observation.effect?.id !== id || observation.effect.settled !== true) throw fail('EFFECT_UNKNOWN');
+        await this.settle(id, 'SETTLED', unresolved ? 'BLOCKED' :
+          this.record.transaction.id === id ? 'RECOVERING' : 'CLAIMED');
+      }
       this.blocked = unresolved;
-    });
+    }).catch(async error => { await this.diagnose('reconcile', error,
+      this.record.operations.find(op => op.id === id)); throw error; });
   }
   obsoleteLocator(capability, record) {
     const epoch = this.epoch, selected = structuredClone({ capability, record });
@@ -440,15 +533,19 @@ class ParentSlot {
         observation.missing?.code !== 'pane_not_found' || observation.missing.paneId !== r.paneId)
         throw fail('CLOSURE_MISMATCH');
       this.check(selected.capability, epoch);
-      if (this.record.closures.some(entry => entry.role === r.role && entry.paneId === r.paneId &&
-        entry.sessionId === r.sessionId && entry.reason === 'pane_not_found')) return;
+      let candidate = this.record;
+      for (const operation of candidate.operations.filter(op => op.target.paneId === r.paneId &&
+        ['UNKNOWN', 'DISPATCHED'].includes(op.status))) candidate = this.obsoleteOperation(candidate, operation);
+      const alreadyClosed = candidate.closures.some(entry => entry.role === r.role && entry.paneId === r.paneId &&
+        entry.sessionId === r.sessionId && entry.reason === 'pane_not_found');
+      if (candidate === this.record && alreadyClosed) return;
       const locatorOwners = [...this.record.locatorOwners];
       for (const key of locatorKeys) if (text(r[key])) {
         const path = canonical(resolve(r[key])), old = locatorOwners.find(entry => entry.path === path);
         if (old && old.sessionId !== r.sessionId) throw fail('ROLE_MISMATCH');
         if (!old) locatorOwners.push({ path, sessionId: r.sessionId });
       }
-      await this.publish({ ...this.record, locatorOwners, closures: [...this.record.closures,
+      await this.publish({ ...candidate, locatorOwners, closures: alreadyClosed ? candidate.closures : [...candidate.closures,
         { role: r.role, paneId: r.paneId, reason: 'pane_not_found', sessionId: r.sessionId, generation: this.record.generation }] });
     });
   }
@@ -463,8 +560,8 @@ class ParentSlot {
     });
   }
   release() {
-    if (!this.leaseHeld && this.record.phase === 'RELEASED') return Promise.resolve();
     if (this.releasing) return this.releasing;
+    if (!this.db.isOpen) return Promise.resolve();
     this.draining = true;
     this.epoch++;
     const begin = this.enqueue(async () => {
@@ -478,11 +575,18 @@ class ParentSlot {
       }
       await this.enqueue(async () => {
         await this.publish({ ...this.record, phase: 'RELEASED' });
-        this.db.exec('ROLLBACK');
-        this.db.close();
-        actors.delete(this.actorKey);
       });
-    }).catch(error => { this.releasing = null; throw error; });
+    }).catch(async error => { await this.diagnose('release', error,
+      this.record.operations.find(op => op.status !== 'SETTLED')); throw error; }).finally(() => this.enqueue(() => {
+      try { if (this.db.isOpen && this.db.isTransaction) this.db.exec('ROLLBACK'); }
+      finally {
+        if (this.db.isOpen) this.db.close();
+        if (this.publishedRecord && this.publishedRecord.phase !== 'RELEASED')
+          releasedSlots.set(this.actorKey, structuredClone(this.publishedRecord));
+        else releasedSlots.delete(this.actorKey);
+        actors.delete(this.actorKey);
+      }
+    }));
     return this.releasing;
   }
 }

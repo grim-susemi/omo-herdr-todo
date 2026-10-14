@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { displayOwnerKey, installDisplayBridge } from './display-bridge.mjs';
 import { createPresence } from './presence.mjs';
 import { createSnapshotStorage, sameSnapshotScope } from './storage.mjs';
-import { claimParentSlot, parentSlotPaths, validParentSlot } from './parent-slot.mjs';
+import { claimParentSlot, cooperativelyReleasedParentSlot, parentSlotPaths, validParentSlot } from './parent-slot.mjs';
 
 const execute = promisify(execFile);
 export const dashboardChannels = Object.freeze({
@@ -925,8 +925,8 @@ export async function canCleanupPane(info, record, inspect) {
 export class TodoPane {
   constructor({ ctx, environment = process.env, stateDir, cwd, node = process.execPath,
     viewer, herdr = createDashboardHerdr(environment), inspectShell, language = 'en', notify = () => {}, managed = false,
-    retirementObservations = new Map() }) {
-    Object.assign(this, { ctx, environment, stateDir, cwd, node, viewer, herdr, inspectShell, language, notify, managed });
+    retirementObservations = new Map(), retireViewer = retireVerifiedViewer }) {
+    Object.assign(this, { ctx, environment, stateDir, cwd, node, viewer, herdr, inspectShell, language, notify, managed, retireViewer });
     this.binding = { socketPath: environment.HERDR_SOCKET_PATH, parentPaneId: environment.HERDR_PANE_ID,
       sessionId: ctx.sessionManager.getSessionId() };
     this.binding.ownerKey = displayOwnerKey(this.binding.socketPath, this.binding.parentPaneId, this.binding.sessionId);
@@ -981,6 +981,7 @@ export class TodoPane {
         this.bridge?.readinessChanged();
         void this.watchRecoveryMembership().catch(() => {});
       }
+      void actor?.diagnose('controller-write', error);
       throw error;
     });
     this.managedTail = result.catch(() => {});
@@ -1026,6 +1027,19 @@ export class TodoPane {
     if (!role) return this.nativePane(paneId);
     return role.role === 'todo' ? this.nativePane(paneId, await readJson(this.recordFile)) : this.provider.observeTarget(role);
   }
+  async observePreviousProducer(identity) {
+    // A successful exact native process inventory is authoritative: absence or
+    // a different immutable kernel birth proves this recorded instance is gone.
+    // Query failures, malformed rows and a live matching birth are not death.
+    const rows = await (this.inspectShell ?? nativeShellProcesses)(identity.pid);
+    if (!Array.isArray(rows)) throw blocked('previous native process inventory unavailable');
+    const matches = rows.filter(row => row.ProcessId === identity.pid);
+    if (matches.length > 1 || matches.length === 1 && !matches[0].Birth)
+      throw blocked('previous native process identity unavailable');
+    if (!matches.length || matches[0].Birth !== identity.birth)
+      return { identity: structuredClone(identity), state: 'dead' };
+    return null;
+  }
   async observeManaged({ target, operation, locator }) {
     const parent = await this.nativePane(this.binding.parentPaneId);
     const rows = await (this.inspectShell ?? nativeShellProcesses)(process.pid);
@@ -1046,8 +1060,17 @@ export class TodoPane {
         missing = { code: error.code, paneId: locator.paneId };
       }
     }
+    // Missing target authority is observed before awaiting a historical effect
+    // promise or reading its role source. Closed panes cannot paint or preserve
+    // the geometry an old placement operation was waiting for.
+    if (target && operation) {
+      try { await this.herdr('get', target.paneId); }
+      catch (error) {
+        if (!authoritativePaneNotFound(error)) throw error;
+        return { parent, producer, missing: { code: error.code, paneId: target.paneId } };
+      }
+    }
     const retained = operation && this.effectObservations.get(operation.id);
-    if (retained?.promise) await retained.promise;
     if (operation?.type === 'close' && retained?.settled && retained.retiredTarget) {
       try { await this.herdr('get', target.paneId); }
       catch (error) {
@@ -1469,7 +1492,9 @@ export class TodoPane {
       const paths = await parentSlotPaths({ stateDir: this.stateDir, socketPath: this.binding.socketPath,
         parent: observation.parent });
       const previous = await readJson(paths.slotPath);
-      if (validParentSlot(previous) && previous.phase !== 'RELEASED') {
+      if (validParentSlot(previous) && previous.phase !== 'RELEASED' &&
+        !cooperativelyReleasedParentSlot(previous, observation.producer) &&
+        !(await this.observePreviousProducer(previous.producer))) {
         let capture = [...this.legacyObservations.values()].find(value =>
           JSON.stringify(value.identity) === JSON.stringify(previous.producer));
         if (!capture) {
@@ -1491,6 +1516,8 @@ export class TodoPane {
         parent: observation.parent, producer: observation.producer, sessionId: this.binding.sessionId,
         observe: request => this.observeManaged(request),
         observePrevious: async identity => {
+          const native = await this.observePreviousProducer(identity);
+          if (native) return native;
           for (const capture of this.legacyObservations.values()) {
             if (JSON.stringify(capture.identity) !== JSON.stringify(identity)) continue;
             const retired = await observeLegacyRetirement(capture, { stateDir: this.stateDir,
@@ -1755,9 +1782,21 @@ export class TodoPane {
       if (registered?.generation === this.actor.snapshot.generation && registered.paneId === record.paneId ||
         this.ownedRoles.get(record.role)?.launchToken === record.launchToken && record.scopeEpoch === this.scopeEpoch) continue;
       if (typeof this.node === 'function') this.node = await this.node();
+      const oldSource = pathKey(record.viewerPath).match(/^(.*\/)generation-(\d{6})(\/.*)$/);
+      const currentSource = pathKey(viewer).match(/^(.*\/)generation-(\d{6})(\/.*)$/);
+      const upgrade = this.claimRetired && sameDashboardOwner(record, this.binding) &&
+        oldSource && currentSource && oldSource[1] === currentSource[1] && oldSource[3] === currentSource[3] &&
+        Number(oldSource[2]) < Number(currentSource[2]) && registered?.generation < this.actor.snapshot.generation &&
+        registered.paneId === record.paneId && registered.tabId === record.tabId &&
+        registered.sessionId === record.sessionId && registered.statePath === record.statePath &&
+        registered.launchToken === record.launchToken && registered.viewer?.pid === record.processId &&
+        registered.viewer.birth === record.viewerBirth &&
+        pathKey(registered.viewer.executable) === pathKey(record.nodePath);
       if (record.schema !== 'omo-herdr-dashboard/pane/1' ||
-        pathKey(record.viewerPath) !== pathKey(viewer) || pathKey(record.nodePath) !== pathKey(this.node))
+        !upgrade && (pathKey(record.viewerPath) !== pathKey(viewer) || pathKey(record.nodePath) !== pathKey(this.node))) {
+        await this.actor?.diagnose('legacy-source', { code: 'SOURCE_MISMATCH' }, { role: record.role });
         throw blocked('legacy executable or viewer source mismatch');
+      }
       const member = await this.membership(record.paneId);
       if (member.tabId !== record.tabId || record.paneId === this.binding.parentPaneId)
         throw blocked('legacy membership changed');
@@ -1782,10 +1821,21 @@ export class TodoPane {
         }
       }
       if (!identity) throw blocked('legacy shell or viewer identity unverified');
+      if (upgrade && (registered.shell.pid !== identity.shell.pid || registered.shell.birth !== identity.shell.birth ||
+        !empty && JSON.stringify(registered.viewer) !== JSON.stringify(identity.viewer)))
+        throw blocked('registered older generation native role binding changed');
       const state = await readJson(record.statePath);
       if (!state || !sameDashboardOwner(state, record) || state.role !== record.role ||
         state.paneId !== record.paneId || state.launchToken !== record.launchToken)
         throw blocked('legacy role state changed');
+      if (upgrade && (!this.managed || !this.actor.leaseHeld || this.actor.blocked || this.actor.draining ||
+        state.managedScope?.generation !== registered.generation ||
+        state.managedScope.sessionId !== registered.sessionId ||
+        state.managedScope.participant !== registered.participant ||
+        state.managedScope.lifetimeId !== registered.lifetimeId ||
+        registered.prefsPath !== state.prefsPath ||
+        registered.cachePath !== (record.role === 'todo' ? state.cachePath : record.statePath)))
+        throw blocked('retained generation source is outside predecessor claim');
       if (empty && (state.managedScope?.generation !== registered.generation ||
         state.managedScope.sessionId !== registered.sessionId ||
         state.managedScope.participant !== registered.participant ||
@@ -1800,8 +1850,8 @@ export class TodoPane {
         !empty && JSON.stringify(registered.viewer) !== JSON.stringify(identity.viewer)))
         throw blocked('prior legacy conversation retirement or native role binding unverified');
       if (record.prepared && !identity.viewer || this.claimRetired && registered?.paneId === record.paneId) {
-        const retained = { path, record, paneId: record.paneId, state: 'retained', identity, empty };
-        if (record.sessionId !== this.binding.sessionId || empty) {
+        const retained = { path, record, paneId: record.paneId, state: 'retained', identity, empty, upgrade: Boolean(upgrade) };
+        if (record.sessionId !== this.binding.sessionId || empty || upgrade) {
           retained.target = Object.fromEntries(['paneId', 'tabId', 'shell', ...(empty ? [] : ['viewer']), 'statePath',
             'sourcePath', 'cachePath', 'prefsPath', 'launchToken', 'controlToken'].map(key => [key, registered[key]]));
           this.retainedTargets.set(record.paneId, retained);
@@ -1873,7 +1923,6 @@ export class TodoPane {
       throw blocked('retained retirement geometry unavailable');
     await this.managedWrite(async () => {
       await this.observeRetainedTarget(retained);
-      await prepare();
     });
     if (retained.empty) {
       const member = await this.membership(record.paneId);
@@ -1883,10 +1932,11 @@ export class TodoPane {
         layoutBinding((await this.herdr('layout', '--pane', record.paneId))?.layout) !== layoutBinding(before))
         throw blocked('empty retained shell or geometry changed before relaunch');
       this.retainedTargets.delete(record.paneId);
+      await this.managedWrite(prepare);
       return;
     }
     await this.perform(record.role, 'retire', target, async () => {
-      const receipt = await retireVerifiedViewer(record, identity);
+      const receipt = await this.retireViewer(record, identity);
       if (receipt.manual) throw blocked('manual closure superseded retirement');
       const member = await this.membership(record.paneId);
       const info = await this.herdr('process-info', '--pane', record.paneId);
@@ -1898,11 +1948,13 @@ export class TodoPane {
       this.retainedTargets.delete(record.paneId);
       return { result: receipt, effects: Promise.resolve() };
     });
+    await this.managedWrite(prepare);
   }
   async replaceRetainedTodo(retained) {
     const old = retained.record;
+    if (typeof this.node === 'function') this.node = await this.node();
     const record = { ...old, ...this.binding, scopeEpoch: this.scopeEpoch,
-      statePath: this.stateFile, launchToken: randomBytes(24).toString('hex'),
+      statePath: this.stateFile, viewerPath: this.viewer, nodePath: this.node, launchToken: randomBytes(24).toString('hex'),
       prepared: true, ready: false, manualClose: false, layoutClaim: this.claim };
     delete record.processId; delete record.viewerBirth;
     await this.retireRetainedRole(retained, () => this.roleWrite(async () => {
@@ -1993,13 +2045,13 @@ export class TodoPane {
         this.recoveryRetry = Boolean(retry);
         this.recoveryChanged = false;
         if (this.actor?.blocked && retry) {
-          for (const operation of this.actor.snapshot.operations.filter(op => op.status === 'UNKNOWN'))
+          for (const operation of this.actor.snapshot.operations.filter(op => ['UNKNOWN', 'DISPATCHED'].includes(op.status)))
             await this.actor.reconcile(operation.id);
         }
         this.assertManaged();
         try {
           const retainedTodo = await this.reconcileLegacy(this.stateDir);
-          for (const retained of retainedTodo) if ((retained.record?.sessionId !== this.binding.sessionId || retained.empty) &&
+          for (const retained of retainedTodo) if ((retained.record?.sessionId !== this.binding.sessionId || retained.empty || retained.upgrade) &&
             retained.state === 'retained') await this.replaceRetainedTodo(retained);
           const provider = this.provider;
           if (provider) {
@@ -2012,6 +2064,7 @@ export class TodoPane {
           this.recoveryBlocked = false;
         } catch (error) {
           this.recoveryBlocked = true;
+          await this.actor?.diagnose('schedule', error?.code ? error : { code: 'RECOVERY_BLOCKED' });
           await this.watchRecoveryMembership().catch(() => {});
           throw error;
         }
@@ -2296,6 +2349,7 @@ export class TodoPane {
     releasing?.catch(() => {});
     const peerDrain = this.managed && ownedClaim && provider &&
       provider?.lifetimeId === this.actor.snapshot.participants.dag?.lifetimeId ? provider.drain() : null;
+    peerDrain?.catch(() => {});
     this.stopSignal.abort();
     this.recoveryWatch?.socket?.destroy();
     this.offSource?.(); this.offReadiness?.();
@@ -2316,25 +2370,33 @@ export class TodoPane {
           await this.terminalAuthority('todo', this.lifetimeId, [record])))
         await writeJson(this.stateFile, this.roleState(record, false));
     } catch (error) { terminalFailure = error; }
-    finally {
+    try {
       for (const socket of this.controlSockets) if (!this.retirementSubscribers.has(socket)) socket.destroy();
       await this.presence?.close();
-    }
+    } catch (error) { terminalFailure ??= error; }
     try {
       await this.managedTail;
-      await peerDrain;
-      if (ownedClaim && this.ownsPublisherClaim()) await this.actor.drain('todo', this.lifetimeId);
-      await releasing;
+      try { await peerDrain; } catch (error) { terminalFailure ??= error; }
+      try {
+        if (ownedClaim && this.ownsPublisherClaim()) await this.actor.drain('todo', this.lifetimeId);
+      } catch (error) { terminalFailure ??= error; }
+      try { await releasing; } catch (error) { terminalFailure ??= error; }
       if (this.actor?.snapshot.phase === 'RELEASED') for (const [socket, subscriber] of this.retirementSubscribers) {
         send(socket, { ...subscriber.offer, type: 'released', nonce: subscriber.nonce, slot: this.actor.snapshot,
           recordSHA256: subscriber.recordSHA256,
           stateSHA256: createHash('sha256').update(await readFile(this.stateFile)).digest('hex') });
       }
     } finally {
-      for (const socket of this.controlSockets) socket.end();
+      // A failed drain is still a terminal lifetime boundary. release() closes
+      // SQLite in its finally branch, retaining BLOCKED evidence if necessary.
+      await Promise.allSettled([releasing, peerDrain]);
+      for (const socket of this.controlSockets) socket.destroy();
       if (this.control?.listening) await new Promise(resolve => this.control.close(resolve));
-      await Promise.all([...this.legacyObservations.values()].map(value => value.dispose()));
-      await Promise.all([...this.viewerHolders.values()].map(value => value.observer.dispose()));
+      const disposed = await Promise.allSettled([
+        ...[...this.legacyObservations.values()].map(value => Promise.resolve().then(() => value.dispose())),
+        ...[...this.viewerHolders.values()].map(value => Promise.resolve().then(() => value.observer.dispose())),
+      ]);
+      for (const result of disposed) if (result.status === 'rejected') terminalFailure ??= result.reason;
     }
     if (terminalFailure) throw terminalFailure;
     })();

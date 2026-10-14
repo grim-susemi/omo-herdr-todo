@@ -17,6 +17,45 @@ const snapshot = { type: 'custom', customType: 'senpi.todo-state', data: {
   schema: 'v2', phases: [{ name: 'Build', tasks: [{ content: 'Native work', status: 'in_progress' }] }],
 } };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+test('previous producer death requires authoritative native inventory', async () => {
+  const identity = { pid: 123, birth: 'original-birth', executable: 'node.exe', argvDigest: 'a'.repeat(64) };
+  const controller = new TodoPane({ ctx: { sessionManager: { getSessionId: () => 'inventory-session' } },
+    environment: { HERDR_SOCKET_PATH: 'synthetic-socket', HERDR_PANE_ID: 'qa:parent' },
+    stateDir: tmpdir(), cwd: tmpdir(), viewer: 'viewer.mjs' });
+  for (const rows of [[], [{ ProcessId: identity.pid, Birth: 'replacement-birth' }]]) {
+    controller.inspectShell = async () => rows;
+    assert.deepEqual(await controller.observePreviousProducer(identity), { identity, state: 'dead' });
+  }
+  controller.inspectShell = async () => [{ ProcessId: identity.pid, Birth: identity.birth }];
+  assert.equal(await controller.observePreviousProducer(identity), null);
+  for (const rows of [null, [{ ProcessId: identity.pid }],
+    [{ ProcessId: identity.pid, Birth: identity.birth }, { ProcessId: identity.pid, Birth: identity.birth }]]) {
+    controller.inspectShell = async () => rows;
+    await assert.rejects(controller.observePreviousProducer(identity), { inlineFallback: true });
+  }
+  controller.inspectShell = async () => { throw new Error('inventory unavailable'); };
+  await assert.rejects(controller.observePreviousProducer(identity), /inventory unavailable/);
+});
+
+test('missing managed target is observed before historical effects and role sources', async () => {
+  const parent = { paneId: 'qa:parent', shell: { pid: 456 } };
+  const controller = new TodoPane({ ctx: { sessionManager: { getSessionId: () => 'missing-session' } },
+    environment: { HERDR_SOCKET_PATH: 'synthetic-socket', HERDR_PANE_ID: parent.paneId },
+    stateDir: tmpdir(), cwd: tmpdir(), viewer: 'viewer.mjs',
+    inspectShell: async () => [{ ProcessId: process.pid, ParentProcessId: parent.shell.pid,
+      Birth: 'producer-birth', ExecutablePath: process.execPath, CommandLine: 'node' }],
+    herdr: async (...args) => {
+      assert.deepEqual(args, ['get', 'qa:gone']);
+      throw Object.assign(new Error('gone'), { code: 'pane_not_found' });
+    } });
+  controller.nativePane = async paneId => { assert.equal(paneId, parent.paneId); return parent; };
+  const operation = { id: 'old-effect', type: 'arrange', status: 'UNKNOWN' };
+  controller.effectObservations.set(operation.id, { get promise() { throw new Error('historical effect was read'); } });
+  const observed = await controller.observeManaged({ target: { paneId: 'qa:gone', statePath: 'unreadable' }, operation });
+  assert.deepEqual(observed.missing, { code: 'pane_not_found', paneId: 'qa:gone' });
+  assert.equal(observed.target, undefined);
+});
+
 async function fixture(t, branch = [snapshot]) {
   const directory = join(tmpdir(), `todo-controller-${process.pid}-${randomUUID()}`);
   console.log(JSON.stringify({ event: 'resource-planned', pid: process.pid, directory }));

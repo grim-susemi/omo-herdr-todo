@@ -677,10 +677,12 @@ test('unknown effect blocks ownership until reconciled rather than replaying spl
   assert.equal(actor.snapshot.phase, 'BLOCKED');
   assert.equal(actor.snapshot.operations[0].status, 'UNKNOWN');
   assert.equal(actor.inlineFallback, true);
-  // This unit cannot claim safe RELEASED with an unresolved operation.
-  await assert.rejects(actor.release(), { code: 'EFFECT_UNKNOWN' });
-  // A positive authoritative effect observation, not a retry, settles it.
+  // A positive authoritative effect observation while the lease is held, not
+  // a retry, settles it. Blocked release now closes the terminal actor; the
+  // dedicated upgrade suite covers that separate stop/restart contract.
   await actor.reconcile(actor.snapshot.operations[0].id);
+  assert.equal(actor.snapshot.operations[0].status, 'SETTLED');
+  assert.equal(actor.blocked, false);
 });
 
 test('generation scoped manual closures reject stale roles and are not task payloads', async t => {
