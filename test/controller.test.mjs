@@ -849,6 +849,98 @@ for (const caller of ['reconcileLegacy', 'ensureTodo'])
     }
   });
 
+for (const scenario of ['dead-viewer', 'dead-node', 'live', 'ambiguous-absence',
+  'unreadable-membership', 'owner-unheld', 'reappeared'])
+  test(`upgrade legacy Todo recovery: ${scenario}`, async t => {
+    const f = await arrangeFixture(t), owner = f.owner;
+    owner.viewer = join(f.directory, 'generation-000004', 'viewer.mjs');
+    owner.scopeEpoch = 1;
+    owner.storage = { path: join(f.directory, 'cache.json') };
+    owner.presence = { offer: () => null };
+    const record = { schema: 'omo-herdr-dashboard/pane/1', ...owner.binding,
+      role: 'todo', paneId: 'qa:legacy', tabId: 'qa:tab', scopeEpoch: 1,
+      launchToken: 'generation-3-launch', statePath: owner.stateFile,
+      viewerPath: scenario === 'dead-node' ? owner.viewer : join(f.directory, 'generation-000003', 'viewer.mjs'),
+      nodePath: scenario === 'dead-node' ? join(f.directory, 'old-node.exe') : owner.node,
+      prepared: true, ready: true, manualClose: false, processId: 5001 };
+    await mkdir(owner.directory, { recursive: true });
+    await writeFile(owner.recordFile, JSON.stringify(record));
+    let live = scenario === 'live', authority = false, retirementCalls = 0;
+    const calls = [], obsolete = f.actor.obsoleteLocator.bind(f.actor);
+    f.actor.obsoleteLocator = (capability, locator) => {
+      retirementCalls++;
+      assert.equal(authority, true, 'retirement must run through managedWrite');
+      return obsolete(capability, locator);
+    };
+    const managedWrite = owner.managedWrite.bind(owner);
+    owner.managedWrite = job => managedWrite(async actor => {
+      authority = true;
+      try { return await job(actor); } finally { authority = false; }
+    });
+    owner.herdr = async (...args) => {
+      calls.push({ args, authority });
+      if (args[0] === 'get') {
+        if (live) return { pane: { pane_id: record.paneId } };
+        throw Object.assign(new Error('legacy pane unavailable'),
+          { code: scenario === 'ambiguous-absence' ? 'transport_error' : 'pane_not_found' });
+      }
+      if (args[0] === 'list') return { panes: [{ pane_id: 'qa:parent', tab_id: 'qa:tab' },
+        { pane_id: 'qa:replacement', tab_id: 'qa:tab' }] };
+      if (args[0] === 'split') return { pane: { pane_id: 'qa:replacement' } };
+      if (args[0] === 'process-info') return { process_info: { shell_pid: 456, foreground_processes: [] } };
+      throw new Error('Unexpected native command: ' + args[0]);
+    };
+    const observe = f.actor.observe.bind(f.actor);
+    f.actor.observe = async request => {
+      if (!request.locator) return observe(request);
+      if (scenario === 'unreadable-membership') throw new Error('membership unreadable');
+      const actual = await observe(request);
+      return { ...actual, missing: live ? undefined : { code: 'pane_not_found', paneId: record.paneId } };
+    };
+    owner.mutate = (role, type, target, args) => owner.managedWrite(actor =>
+      actor.perform(actor.capability('todo', role), { type, target },
+        async () => ({ result: await owner.herdr(...args), effects: Promise.resolve() })));
+    // The launch receipt is synthetic; actual locator recovery, actor validation,
+    // split authority and creation-record writes remain integrated.
+    owner.launchTodo = async next => {
+      await writeFile(owner.recordFile, JSON.stringify({ ...next, ready: true, processId: 5002 }));
+      return next.paneId;
+    };
+    owner.watchRecoveryMembership = async () => {};
+    if (scenario === 'owner-unheld') {
+      const actor = owner.actor;
+      owner.actor = undefined;
+      try { await assert.rejects(owner.reconcileLegacy(owner.stateDir), /legacy tombstone requires held owner/); }
+      finally { owner.actor = actor; }
+    } else if (['live', 'ambiguous-absence', 'unreadable-membership'].includes(scenario)) {
+      await assert.rejects(owner.reconcileLegacy(owner.stateDir),
+        scenario === 'live' ? /legacy executable or viewer source mismatch/ :
+          scenario === 'ambiguous-absence' ? /legacy pane unavailable/ : /membership unreadable/);
+    } else {
+      await owner.reconcileLegacy(owner.stateDir);
+      assert.equal(f.actor.snapshot.closures.filter(entry => entry.paneId === record.paneId).length, 1);
+      assert.deepEqual(JSON.parse(await readFile(owner.recordFile)), record,
+        'actor retirement preserves the locator as evidence until normal replacement');
+      if (scenario === 'reappeared') {
+        live = true;
+        await assert.rejects(owner.ensureTodo({ paneId: 'qa:parent', tabId: 'qa:tab' }, true));
+      } else {
+        assert.equal(await owner.ensureTodo({ paneId: 'qa:parent', tabId: 'qa:tab' }, true), 'qa:replacement');
+        const current = JSON.parse(await readFile(owner.recordFile));
+        assert.equal(current.viewerPath, owner.viewer);
+        assert.equal(current.nodePath, owner.node);
+        assert.notEqual(current.launchToken, record.launchToken);
+        assert.ok(retirementCalls >= 2, 'consuming the tombstone revalidates actor authority and native absence');
+        assert.ok(calls.filter(call => call.args[0] === 'split').every(call => call.authority));
+      }
+    }
+    if (!scenario.startsWith('dead-')) {
+      assert.deepEqual(JSON.parse(await readFile(owner.recordFile)), record);
+      assert.equal(calls.filter(call => call.args[0] === 'split').length, 0);
+    }
+    assert.equal(calls.filter(call => call.args[0] === 'close').length, 0);
+  });
+
 test('task20 an already-painted current receipt still revalidates RECOVERING to READY', async t => {
   const f = await arrangeFixture(t);
   for (const [index, role] of ['todo', 'dag', 'workers'].entries()) {

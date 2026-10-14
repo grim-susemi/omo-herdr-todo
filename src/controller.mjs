@@ -1710,6 +1710,8 @@ export class TodoPane {
       mutate: (role, type, target, args, effect, beforeSubmit) => this.mutate(role, type, target, args, effect, beforeSubmit),
       target: paneId => this.currentTarget(paneId),
       reconcileLegacy: (root, reader, viewer) => this.reconcileLegacy(root, reader, viewer),
+      obsoleteLocator: record => this.managedWrite(actor =>
+        actor.obsoleteLocator(actor.capability(record.role === 'todo' ? 'todo' : 'dag', record.role), record)),
       retireRetainedRole: (retained, prepare) => this.retireRetainedRole(retained, prepare),
       registerRole: (role, readTarget) => this.registerManagedRole(role, readTarget),
       holdRoleViewer: (role, record) => this.holdRoleViewer(role, record),
@@ -1742,8 +1744,6 @@ export class TodoPane {
     for (const { path, record } of entries) {
       if (!roles.has(record.role) || !record.paneId || record.manualClose) continue;
       const registered = this.actor?.snapshot.roles[record.role];
-      if (this.actor?.snapshot.closures.some(entry => entry.role === record.role && entry.paneId === record.paneId &&
-        entry.sessionId === record.sessionId && entry.reason === 'pane_not_found')) continue;
       try { await this.herdr('get', record.paneId); }
       catch (error) {
         if (!authoritativePaneNotFound(error)) throw blocked(error);
@@ -2079,6 +2079,20 @@ export class TodoPane {
   async ensureTodo(anchor, force) {
     if (force) await this.roleTail;
     let record = await readJson(this.recordFile);
+    // A tombstone retires the locator, not its evidence file. Only an obsolete
+    // generation may bypass the current viewer guard, after fresh actor validation.
+    if (this.managed && record && !record.manualClose &&
+      this.recordMatches({ ...record, viewerPath: this.viewer }) && typeof record.nodePath === 'string' &&
+      (pathKey(record.viewerPath) !== pathKey(this.viewer) || typeof this.node === 'function' ||
+        pathKey(record.nodePath) !== pathKey(this.node)) &&
+      this.actor?.snapshot.closures.some(entry => entry.role === 'todo' && entry.paneId === record.paneId &&
+        entry.sessionId === record.sessionId && entry.reason === 'pane_not_found')) {
+      if (typeof this.node === 'function') this.node = await this.node();
+      if (pathKey(record.viewerPath) !== pathKey(this.viewer) || pathKey(record.nodePath) !== pathKey(this.node)) {
+        await this.managedWrite(actor => actor.obsoleteLocator(actor.capability('todo', 'todo'), record));
+        record = null;
+      }
+    }
     if (record && !this.recordMatches(record)) {
       if (this.managed) throw blocked('retained Todo record identity changed');
       this.status = 'layout-waiting'; return;
