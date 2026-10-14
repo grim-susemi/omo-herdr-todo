@@ -30,7 +30,7 @@ try {
   const packed = Array.isArray(packResult) ? packResult[0] : packResult[pkg.name]; // npm 12 keys results by package name.
   const paths = new Set(packed.files.map(file => file.path));
   for (const path of ['package.json', 'LICENSE', 'bin/omo-herdr-todo.mjs', 'dist/extension.mjs', 'dist/LICENSE', 'dist/THIRD-PARTY-NOTICES.md',
-    'dist/src/viewer.mjs', 'dist/src/controller.mjs', 'dist/scripts/install.mjs', 'README.md', 'THIRD-PARTY-NOTICES.md']) {
+    'dist/src/viewer.mjs', 'dist/src/controller.mjs', 'dist/src/parent-slot.mjs', 'dist/src/presence.mjs', 'dist/src/storage.mjs', 'dist/src/display-bridge.mjs', 'dist/src/inline-recovery.mjs', 'dist/src/native-todo.mjs', 'dist/src/child-guard.mjs', 'dist/src/render.mjs', 'dist/src/i18n.mjs', 'dist/scripts/install.mjs', 'README.md', 'THIRD-PARTY-NOTICES.md']) {
     assert.ok(paths.has(path), `Missing from npm tarball: ${path}`);
   }
   for (const path of paths) {

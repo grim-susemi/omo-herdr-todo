@@ -34,6 +34,10 @@ The host uses real stock ResourceLoader, SessionManager, registered tool/command
 
 See [installation](docs/INSTALL.md), [protocol](docs/PROTOCOL.md), and [roadmap](docs/ROADMAP.md). The current source history is available on the [`feat/concurrent-dashboard` branch](https://github.com/grim-susemi/omo-herdr-todo/tree/feat/concurrent-dashboard), with the matching [DAG companion source](https://github.com/grim-susemi/omo-herdr-dag/tree/feat/concurrent-views-and-metrics). These are source checkouts, not a new npm release.
 
+## Restart recovery and activation
+
+`install --dry-run --agent-dir <dir>` writes nothing and touches no panes. A real install first validates the existing generation, wrapper and locale (unmanaged, malformed or interrupted state is rejected before promotion), then promotes an immutable generation that includes the parent-slot runtime; prior generations stay as backups. Normal recovery re-claims the parent slot on the next session; after a fatal exit the dashboard shows a visible BLOCKED state instead of silently relaunching. `q` closes one role only; `/dashboard` reopens all three. Installing files never activates a session: start a new session or run `/reload` as a separate, explicit step.
+
 ## Privacy and provenance
 
 Runtime packages include compiled runtime, CLI, README, MIT license and third-party notices. They exclude tests, private evidence, session/task logs, auth/config profiles and copied SDK files. Public-source preflight is separate from the runtime scan. Hostile examples in safety tests are synthetic rejection fixtures.
@@ -46,5 +50,6 @@ From a clean source checkout, `npm run record:preflight` prints reviewed files/h
 
 - DAG·작업자·Todo를 동시에 봅니다. 각 화면의 `f` 추적과 수동 탐색은 독립적입니다.
 - `c`로 완료 항목을 펼치고 `q`로 해당 화면만 닫습니다. `/dashboard` 하나로 세 화면을 다시 엽니다.
+- 재시작 복구: 정상 종료는 다음 세션에서 슬롯을 다시 확보하고, 치명적 종료는 BLOCKED로 표시됩니다. `--dry-run`은 아무것도 쓰지 않습니다.
 - 설치 파일 복사와 세션 활성화는 다릅니다. 보고된 비용과 연결이 끊긴 화면을 실제 청구·최신 진행으로 혼동하지 마세요.
 - 최신 소스 이력은 위 두 GitHub 브랜치에 있습니다. npm 정식 배포와 실사용 설치는 별도입니다.

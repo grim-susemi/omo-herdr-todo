@@ -6,7 +6,8 @@ import { emitKeypressEvents } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import { createRoleClient } from './presence.mjs';
 import { sameSnapshotScope, validSnapshot } from './storage.mjs';
-import { readRoleState, registerRoleViewer, requestRoleClose } from './controller.mjs';
+import { captureLegacyProducer, createDashboardHerdr, createProducerCustodyServer,
+  createViewerRetirementServer, readRoleState, registerRoleViewer, requestRoleClose } from './controller.mjs';
 import { isClosedPhase, renderFrame, runningTarget } from './render.mjs';
 import { t } from './i18n.mjs';
 
@@ -81,7 +82,48 @@ export async function startViewer(options, { input = process.stdin, output = pro
   let resolveClosed;
   const closed = new Promise(done => { resolveClosed = done; });
   const temporaryPrefs = `${options.statePath}.view.json.${pid}.pending`;
-  let watcher, timer;
+  let watcher, timer, closeRetirement, closeCustody, custody, custodyKey, custodyClosure;
+  let custodyWanted, custodyJobs = Promise.resolve();
+  async function disposeCustody() {
+    const selected = custody;
+    custody = null;
+    if (selected) custodyClosure = await selected.dispose();
+    return custodyClosure;
+  }
+  function queueCustody(next, epoch) {
+    if (!interactive) return;
+    const key = JSON.stringify([next.custodyBinding, next.managedScope, next.controlOffer]);
+    if (key === custodyWanted) return;
+    custodyWanted = key;
+    custodyJobs = custodyJobs.then(() => bindCustody(next, epoch, key))
+      .catch(cause => events.emit('custody-error', cause));
+  }
+  async function bindCustody(next, epoch, key) {
+    if (closing || key !== custodyWanted || epoch !== generation) return;
+    const binding = next.custodyBinding;
+    if (key === custodyKey) return;
+    if (!binding) {
+      custodyKey = key;
+      await disposeCustody();
+      return;
+    }
+    if (!next.managedScope || binding.ownerNonce !== next.managedScope.ownerNonce ||
+      binding.generation !== next.managedScope.generation || binding.statePath !== options.statePath ||
+      typeof binding.stateDir !== 'string' || typeof binding.recordPath !== 'string')
+      throw new TypeError('Invalid managed producer custody binding');
+    const captured = await captureLegacyProducer({ ...binding, custody: true, herdr: createDashboardHerdr() });
+    const slot = captured.bindings.initialSlot;
+    if (closing || key !== custodyWanted || epoch !== generation || !slot ||
+      slot.ownerNonce !== binding.ownerNonce || slot.generation !== binding.generation ||
+      slot.operations.some(operation => operation.status !== 'SETTLED')) {
+      await captured.dispose();
+      return;
+    }
+    await disposeCustody();
+    custody = captured; custodyKey = key;
+    events.emit('custody-armed', { identity: captured.identity, parent: slot.parent,
+      ownerNonce: slot.ownerNonce, generation: slot.generation });
+  }
   const current = (epoch, source) => !closing && epoch === generation && source === client;
   const write = text => new Promise((done, fail) => output.write(text, cause => cause ? fail(cause) : done()));
   function draw() {
@@ -180,6 +222,7 @@ export async function startViewer(options, { input = process.stdin, output = pro
     invalidState = false;
     state = next;
     const epoch = generation;
+    queueCustody(next, epoch);
     if (scopeChanged || first) {
       await saving;
       await preferences(next, epoch);
@@ -265,11 +308,15 @@ export async function startViewer(options, { input = process.stdin, output = pro
     closing = true;
     closeJob = (async () => {
       let accepted = false;
+      await custodyJobs;
+      await disposeCustody();
       if (manual && interactive && state?.controlOffer) {
         try { accepted = await requestRoleClose({ state, paneId: options.paneId, launchToken: options.launchToken, pid }); }
         catch (cause) { events.emit('control-error', cause); }
       }
       retire();
+      await closeCustody?.();
+      await closeRetirement?.();
       watcher?.close(); clock.clearInterval(timer);
       output.off?.('resize', resize); input.off?.('keypress', keypress);
       if (interactive) { input.setRawMode?.(false); input.pause?.(); }
@@ -328,6 +375,9 @@ export async function startViewer(options, { input = process.stdin, output = pro
       // Repaint even idle/empty baselines. No frame completion means no renewal.
       timer = clock.setInterval(() => { void draw(); }, 1000);
       timer?.unref?.();
+      closeRetirement = await createViewerRetirementServer(options, () => closing ? null : state,
+        () => close(false), disposeCustody);
+      closeCustody = await createProducerCustodyServer(options, () => custody);
     }
     await refresh();
     if (!interactive) await painting;

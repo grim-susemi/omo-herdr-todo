@@ -262,6 +262,14 @@ export function installDisplayBridge(ctx, adapter, { environment = process.env }
     },
     failures,
     captured(key) { return captures.get(key); },
+    invalidate() {
+      revision++;
+      receipt = null;
+      published = null;
+      pending = null;
+      reconcile();
+      return refresh();
+    },
     readinessChanged() {
       if (suspended || blockedEpoch !== null) return false;
       return this.observe(null, ctx);

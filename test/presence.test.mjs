@@ -313,3 +313,27 @@ test('serialized delivery follows cache commit; ENOENT/EPERM publication failure
     assert.ok(widgets.has('todo-sidebar'));
   }
 });
+
+test('task3 stale ACK revokes prior readiness and rotating a role offer rejects its old transport', async t => {
+  const presence = createPresence({ ...owner, storage: memoryStorage(), pipePath: pipe('task3-stale') });
+  t.after(() => presence.close());
+  await presence.start();
+  const receipt = await presence.publish(snapshot(presence));
+  const attached = attachClient(t, presence, 'todo');
+  const message = await signal(attached.client.events, 'snapshot');
+  const painted = signal(presence.events, 'event', event => event.type === 'ack');
+  await paint(attached.client, message, []);
+  await painted;
+  assert.equal(presence.isReady({ ...receipt, role: 'todo' }), true);
+  const rejected = signal(presence.events, 'event', event => event.type === 'rejected' && event.reason === 'ack');
+  attached.client.socket.write(JSON.stringify({ ...presence.offer('todo'), type: 'ack', sequence: receipt.sequence - 1 }) + '\n');
+  await rejected;
+  assert.equal(presence.isReady({ ...receipt, role: 'todo' }), false);
+  const old = presence.offer('todo');
+  const disconnected = signal(attached.client.events, 'disconnected');
+  const current = presence.rotateRole('todo');
+  await disconnected;
+  assert.notEqual(current.token, old.token);
+  assert.equal(attached.client.painted(message), false);
+  assert.equal(presence.isReady({ ...receipt, role: 'todo' }), false);
+});

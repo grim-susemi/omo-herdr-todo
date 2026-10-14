@@ -38,7 +38,7 @@ export function createPresence({ socketPath, parentPaneId, sessionId, scopeEpoch
     !pipePath.startsWith('\\\\.\\pipe\\')) throw new TypeError('Valid owner and Windows named pipe required');
   let owner = { socketPath, parentPaneId, sessionId, scopeEpoch,
     ownerKey: displayOwnerKey(socketPath, parentPaneId, sessionId) };
-  const token = randomBytes(32).toString('hex');
+  const tokens = new Map([...roles].map(role => [role, randomBytes(32).toString('hex')]));
   const events = new EventEmitter();
   const sockets = new Set();
   const observers = new Map();
@@ -54,10 +54,10 @@ export function createPresence({ socketPath, parentPaneId, sessionId, scopeEpoch
   storage.rebase(owner);
   const emit = (type, fields = {}) => events.emit('event', { type, ...fields });
   const changed = () => events.emit('readiness');
-  const binding = role => ({ v: 1, token, ownerKey: owner.ownerKey, sessionId: owner.sessionId,
+  const binding = role => ({ v: 1, token: tokens.get(role), ownerKey: owner.ownerKey, sessionId: owner.sessionId,
     scopeEpoch: owner.scopeEpoch, role });
-  const authenticated = message => message?.v === 1 && message.token === token &&
-    sameSnapshotScope(message, owner) && roles.has(message.role);
+  const authenticated = (message, role = message?.role) => message?.v === 1 && message.token === tokens.get(role) &&
+    sameSnapshotScope(message, owner) && roles.has(role);
   function clearLease(observer) {
     if (observer.timer !== null) clock.clearTimeout(observer.timer);
     observer.timer = null;
@@ -78,7 +78,10 @@ export function createPresence({ socketPath, parentPaneId, sessionId, scopeEpoch
     sockets.add(socket);
     let observer = null;
     const stopReceiving = receive(socket, message => {
-      if (closed || !authenticated(message)) { emit('rejected', { reason: 'binding' }); socket.destroy(); return; }
+      emit('packet', { message: structuredClone(message) });
+      if (closed || !authenticated(message, observer?.role ?? message?.role)) {
+        emit('rejected', { reason: 'binding' }); socket.destroy(); return;
+      }
       if (!observer) {
         if (message.type !== 'hello' || message.sequence !== 0 || observers.has(message.role)) {
           emit('rejected', { reason: 'duplicate-or-hello', role: message.role }); socket.destroy(); return;
@@ -92,7 +95,10 @@ export function createPresence({ socketPath, parentPaneId, sessionId, scopeEpoch
       if (message.type !== 'ack' || message.role !== observer.role || !baseline ||
         message.sequence !== baseline.sequence || message.sequence !== observer.sequence ||
         !['current', 'empty'].includes(state.availability)) {
-        emit('rejected', { reason: 'ack', role: observer.role }); return;
+        clearLease(observer);
+        emit('rejected', { reason: 'ack', role: observer.role });
+        changed();
+        return;
       }
       clearLease(observer);
       observer.expires = clock.now() + leaseMs;
@@ -129,6 +135,19 @@ export function createPresence({ socketPath, parentPaneId, sessionId, scopeEpoch
     offer(role) {
       if (!roles.has(role)) throw new TypeError('Unknown viewer role');
       return { pipePath, ...binding(role), sequence: 0 };
+    },
+    rotateRole(role) {
+      if (closed || !roles.has(role)) throw new TypeError('Current viewer role required');
+      const observer = observers.get(role);
+      if (observer) {
+        clearLease(observer);
+        observers.delete(role);
+        observer.socket.end(JSON.stringify({ type: 'status', ...binding(role),
+          availability: 'last-known', snapshot: baseline, label: 'disconnected; source changed; not live' }) + '\n');
+      }
+      tokens.set(role, randomBytes(32).toString('hex'));
+      changed();
+      return presence.offer(role);
     },
     subscribeReadiness(callback) {
       events.on('readiness', callback);

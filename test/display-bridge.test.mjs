@@ -513,3 +513,25 @@ test('recovery factory retains phase shells, ask, statuses, counts and bounded K
   assert.deepEqual(a.render(80), []);
   assert.ok(b.render(80).length > 0);
 });
+
+test('task3 source invalidation restores inline until the exact new publication sequence is painted', () => {
+  const f = fixture();
+  let paintedSequence = f.bridge.status.publication.sequence;
+  let held = true;
+  f.adapter.isReady = receipt => held && receipt.sequence === paintedSequence;
+  f.ui.setWidget('todo-sidebar', f.factory('native-current'));
+  assert.deepEqual(f.bridge.status.masked, ['todo-sidebar']);
+  f.bridge.invalidate();
+  const current = f.bridge.status.publication;
+  assert.ok(current.sequence > paintedSequence);
+  assert.deepEqual(f.bridge.status.masked, []);
+  assert.equal(f.widgets.get('todo-sidebar').name, 'native-current');
+  paintedSequence = current.sequence;
+  f.bridge.readinessChanged();
+  assert.deepEqual(f.bridge.status.masked, ['todo-sidebar']);
+  held = false;
+  f.bridge.readinessChanged();
+  assert.deepEqual(f.bridge.status.masked, []);
+  assert.equal(f.widgets.get('todo-sidebar').name, 'native-current');
+  f.bridge.remove();
+});

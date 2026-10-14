@@ -1,37 +1,37 @@
 {
   "schema": "omo-herdr-todo/native-source-manifest/1",
   "sdkPackage": "@code-yeongyu/senpi",
-  "sdkVersion": "2026.10.7",
+  "sdkVersion": "2026.10.13",
   "recordedAtUtc": "2026-10-04T11:51:04.805Z",
   "purpose": "Read-only sha256 identity of the installed SDK files used by npm run test:host. test-host.mjs asserts the version and every hash before and after the run.",
   "files": [
     {
       "path": "package.json",
-      "sha256": "4ae54aecc7cff6e2bb36b45c854909fe7e3dc3be17046f436fa580d6d35a044b"
+      "sha256": "3dc4b9df6f0caa09da0f6743b3c45a803641d558e161b81bd3a7f269fa5a3719"
     },
     {
       "path": "dist/core/resource-loader.js",
-      "sha256": "6a0a686c7d87a79c719f6637fbd7d5e10d8d5f2d41b473ad55b4cafc99fcacc7"
+      "sha256": "776dd6893097107669c93dd130bd433368d2cd41a2c32c956667a6c0040c3c88"
     },
     {
       "path": "dist/core/settings-manager.js",
-      "sha256": "a93d35728507dbb92682ce1ec99963d569aabd3db2af83f3bdd3b1e720e38417"
+      "sha256": "debde74bf92367036d5afdf4adf231b018b6629235d2de63c3215a70ae8c9dfd"
     },
     {
       "path": "dist/core/session-manager.js",
-      "sha256": "62dd278dbf81edc3ed5dcde129d2c614fd83dc3f5ee71778b3fb88c40e600a2e"
+      "sha256": "4cedfeabdaa6caceb9527fe3807536fe5010e441e35a9ea6d0375daa5e1e5e4b"
     },
     {
       "path": "dist/core/extensions/loader.js",
-      "sha256": "9b2b4e480f019e15772daababc5cb5c702ade92cb245216c28b9f533c9d1f6f4"
+      "sha256": "6eee9ff2e6b4edfb5965ee97a4cdc4a5bae720c4a3c704947eb1250a584929ce"
     },
     {
       "path": "dist/core/extensions/runner.js",
-      "sha256": "922ce4e7038ea6a6b0f4cfccb316a732aba8e2c38535f5997741f3395f444da0"
+      "sha256": "9e6d3775b44afed17d7af081ccd3591b2c63f774994b9f8190f6feb362f9a147"
     },
     {
       "path": "dist/core/extensions/builtin/index.js",
-      "sha256": "94047d7391dd43b87d62f9d2c0539722274fc91382864115e603a83e344aba23"
+      "sha256": "8d2d2a54c3979d8a87d3044dd5ad7e118d56503263e7112b60b017d73efc6179"
     },
     {
       "path": "dist/core/extensions/builtin/todotools/index.js",
@@ -63,11 +63,11 @@
     },
     {
       "path": "dist/modes/interactive/interactive-mode.js",
-      "sha256": "2d5540c419fa7fce86d32d88fc7fad8cc16c29a9113d2f19714999149fdffc12"
+      "sha256": "6f0107d909c6bc757195a4c97d4dd9b64250840a5ea1e934acf96baac2fce96a"
     },
     {
       "path": "dist/modes/interactive/theme/theme.js",
-      "sha256": "343126cf42b9a79f6e0d4ae565c3a3bf76d8ad865ccb4e72d5fa7c46ec93d9fb"
+      "sha256": "e970e3ec0aa988f69d5b73c9bd6edd5b172a9d79f7d0c049280786002071574b"
     }
   ]
 }

@@ -77,9 +77,15 @@ if (report.ok) {
   const stage = await mkdtemp(join(root,'.dist-stage-'));
   try {
     await mkdir(join(stage,'src'));await mkdir(join(stage,'scripts'));
-    for (const file of ["child-guard","controller","display-bridge","inline-recovery","native-todo","presence","storage","viewer","render","i18n"]) await cp(join(root,'src',file+'.mjs'),join(stage,'src',file+'.mjs'));
+    for (const file of ["child-guard","controller","display-bridge","inline-recovery","native-todo","parent-slot","presence","storage","viewer","render","i18n"]) await cp(join(root,'src',file+'.mjs'),join(stage,'src',file+'.mjs'));
     for (const file of ['extension.mjs','LICENSE','THIRD-PARTY-NOTICES.md']) await cp(join(root,file),join(stage,file));
     await cp(join(root,'scripts/install.mjs'),join(stage,'scripts/install.mjs'));
+    const { createHash } = await import('node:crypto'); const { readdir, readFile, stat, writeFile } = await import('node:fs/promises');
+    const hashes = {};
+    for (const name of (await readdir(stage,{recursive:true})).map(n=>n.split('\\').join('/')).sort()) {
+      if ((await stat(join(stage,name))).isFile()) hashes[name] = createHash('sha256').update(await readFile(join(stage,name))).digest('hex');
+    }
+    await writeFile(join(stage,'runtime-manifest.json'), JSON.stringify({ schema: 'runtime-manifest/1', files: hashes }, null, 2) + '\n');
     await rm(join(root,'dist'),{recursive:true,force:true});await rename(stage,join(root,'dist'));
   } finally {await rm(stage,{recursive:true,force:true});}
 }
